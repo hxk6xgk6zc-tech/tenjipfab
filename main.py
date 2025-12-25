@@ -5,9 +5,14 @@ from datetime import datetime
 
 # モジュールインポート
 from styles import AppColors, TextStyles, ComponentStyles
-from braille_logic import BrailleConverter, SPACE_MARK
+# 特殊符を確実にインポート
+from braille_logic import (
+    BrailleConverter, SPACE_MARK,
+    DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
+    YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
+)
 from stl_generator import STLGenerator
-from history_manager import HistoryManager # 追加
+from history_manager import HistoryManager
 
 async def main(page: ft.Page):
     # --- 1. アプリ全体の初期設定 ---
@@ -29,12 +34,12 @@ async def main(page: ft.Page):
 
     converter = BrailleConverter()
     stl_generator = STLGenerator()
-    history_manager = HistoryManager(page) # 履歴マネージャー初期化
+    history_manager = HistoryManager(page)
     
     current_mapped_data = [] 
     editing_index = -1       
     
-    # 設定の初期化
+    # 設定の初期化 (デフォルト値)
     settings = {
         "max_chars_per_line": 10,
         "max_lines_per_plate": 3,
@@ -44,9 +49,20 @@ async def main(page: ft.Page):
         "use_quick_save": False
     }
 
-    # プラットフォーム判定
-    if page.platform in [ft.PagePlatform.IOS, ft.PagePlatform.ANDROID]:
-        settings["use_quick_save"] = True
+    # プラットフォーム判定 (モバイルならQuick Saveをデフォルト推奨だが、保存値があればそちらを優先するため後で判定)
+    is_mobile = page.platform in [ft.PagePlatform.IOS, ft.PagePlatform.ANDROID]
+
+    # --- 設定の読み込みと復元 ---
+    saved_config = history_manager.load_settings()
+    if saved_config:
+        # 設定キーが存在すれば上書き
+        for key in settings.keys():
+            if key in saved_config:
+                settings[key] = saved_config[key]
+    else:
+        # 初回起動時かつモバイルの場合のみデフォルトをQuickSaveにする
+        if is_mobile:
+            settings["use_quick_save"] = True
     
     txt_input_ref = ft.Ref[ft.TextField]()
     edit_field_ref = ft.Ref[ft.TextField]()
@@ -59,7 +75,7 @@ async def main(page: ft.Page):
 
     if not converter.use_kakasi:
         page.snack_bar = ft.SnackBar(
-            content=ft.Text(f"⚠️ かな変換機能が無効です\nひらがなで入力してください"),
+            content=ft.Text(f"⚠️ かな変換機能が無効です (Pykakasi未検出)\nひらがなで入力してください"),
             bgcolor=AppColors.ERROR,
             duration=5000,
             action="OK"
@@ -79,17 +95,12 @@ async def main(page: ft.Page):
         spacing=10, 
     )
 
-    # --- 禁則処理付き行分割ロジック (省略せず記述) ---
+    # --- 禁則処理付き行分割ロジック ---
     def split_cells_with_rules(all_cells, max_chars):
         lines = []
         current_line = []
         units = []
         i = 0
-        # braille_logicからインポートした定数を使用
-        from braille_logic import (
-            DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
-            YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
-        )
         prefix_marks_vals = {
             tuple(DAKUTEN_MARK), tuple(HANDAKUTEN_MARK), tuple(YOON_MARK),
             tuple(YOON_DAKU_MARK), tuple(YOON_HANDAKU_MARK), tuple(NUM_INDICATOR), tuple(FOREIGN_INDICATOR)
@@ -117,6 +128,7 @@ async def main(page: ft.Page):
             
         if current_line:
             lines.append(current_line)
+            
         return lines
 
     def open_edit_dialog(index):
@@ -241,11 +253,12 @@ async def main(page: ft.Page):
         ],
     )
 
-    # --- 設定関連ハンドラ ---
+    # --- 設定関連ハンドラ (変更時に自動保存) ---
     def on_chars_slider_change(e):
         settings["max_chars_per_line"] = int(e.control.value)
         e.control.label = f"{int(e.control.value)}文字"
         e.control.update()
+        history_manager.save_settings(settings) # 保存
         if current_mapped_data:
             render_braille_preview()
 
@@ -253,6 +266,7 @@ async def main(page: ft.Page):
         settings["max_lines_per_plate"] = int(e.control.value)
         e.control.label = f"{int(e.control.value)}行"
         e.control.update()
+        history_manager.save_settings(settings) # 保存
         if current_mapped_data:
             render_braille_preview()
 
@@ -260,10 +274,12 @@ async def main(page: ft.Page):
         settings["plate_thickness"] = float(e.control.value)
         e.control.label = f"{e.control.value:.1f}mm"
         e.control.update()
+        history_manager.save_settings(settings) # 保存
 
     def on_save_mode_change(e):
         settings["use_quick_save"] = e.control.value
         e.control.update()
+        history_manager.save_settings(settings) # 保存
         
     def on_history_limit_change(e):
         new_limit = int(e.control.value)
@@ -322,15 +338,17 @@ async def main(page: ft.Page):
         page.open(dlg)
 
     # --- 履歴機能 ---
-    
     def restore_history_entry(e):
         """履歴アイテムがタップされたときの復元処理"""
         entry = e.control.data
         
-        # 1. 設定の復元
+        # 1. 設定の復元 (settings辞書とUIの両方を更新)
         settings["max_chars_per_line"] = entry.get("max_chars_per_line", 10)
         settings["max_lines_per_plate"] = entry.get("max_lines_per_plate", 3)
         settings["plate_thickness"] = entry.get("plate_thickness", 1.0)
+        
+        # 現在の設定値も保存しておく（次回起動時のため）
+        history_manager.save_settings(settings)
         
         # 2. テキストの復元と変換
         if txt_input_ref.current:
@@ -350,7 +368,6 @@ async def main(page: ft.Page):
         else:
             list_items = []
             for entry in history_list:
-                # 日時とテキストの要約
                 title = entry.get("text", "")
                 if len(title) > 20: title = title[:20] + "..."
                 subtitle = f"{entry.get('timestamp')} | {entry.get('max_chars_per_line')}字x{entry.get('max_lines_per_plate')}行"
@@ -397,12 +414,10 @@ async def main(page: ft.Page):
         return plates
 
     def _on_save_success(path):
-        """保存成功時の共通処理 (履歴追加など)"""
-        # 履歴に追加
+        """保存成功時の共通処理"""
         text = txt_input_ref.current.value if txt_input_ref.current else ""
         if text:
             history_manager.add_entry(text, settings)
-            
         page.open(ft.SnackBar(content=ft.Text(f"保存しました: {os.path.basename(path)}")))
 
     def handle_save_button_click(e):
@@ -428,17 +443,7 @@ async def main(page: ft.Page):
             save_path = os.path.join(download_dir, filename)
             
             _perform_export(save_path)
-            
-            # Quick Save成功時はトーストと履歴追加
-            text = txt_input_ref.current.value if txt_input_ref.current else ""
-            if text:
-                history_manager.add_entry(text, settings)
-                
-            page.open(ft.SnackBar(
-                content=ft.Text(f"ダウンロードフォルダに保存しました:\n{filename}"),
-                action="OK",
-                duration=5000
-            ))
+            _on_save_success(save_path)
         except Exception as ex:
             page.open(ft.SnackBar(content=ft.Text(f"保存失敗: {str(ex)}"), bgcolor=AppColors.ERROR))
 
@@ -472,7 +477,19 @@ async def main(page: ft.Page):
         on_change=lambda e: update_braille_from_input(e.control.value)
     )
 
-    # ドロワー
+    header = ft.Container(
+        content=ft.Row([
+            ft.IconButton(icon="menu", icon_color=AppColors.PRIMARY, on_click=lambda e: page.open(drawer)),
+            ft.Text("Tenji P-Fab", style=TextStyles.HEADER),
+            ft.Row([
+                ft.IconButton(icon="save_alt", icon_color=AppColors.PRIMARY, tooltip="保存", on_click=handle_save_button_click),
+                ft.IconButton(icon="settings", icon_color=AppColors.PRIMARY, on_click=show_settings)
+            ])
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        padding=ft.padding.only(top=50, left=10, right=10, bottom=10),
+        bgcolor=AppColors.BACKGROUND
+    )
+
     drawer = ft.NavigationDrawer(
         controls=[
             ft.Container(height=12),
@@ -486,19 +503,6 @@ async def main(page: ft.Page):
             ),
         ],
         on_change=lambda e: show_history_dialog(e) if e.control.selected_index == 0 else show_settings(e)
-    )
-
-    header = ft.Container(
-        content=ft.Row([
-            ft.IconButton(icon="menu", icon_color=AppColors.PRIMARY, on_click=lambda e: page.open(drawer)),
-            ft.Text("Tenji P-Fab", style=TextStyles.HEADER),
-            ft.Row([
-                ft.IconButton(icon="save_alt", icon_color=AppColors.PRIMARY, tooltip="保存", on_click=handle_save_button_click),
-                ft.IconButton(icon="settings", icon_color=AppColors.PRIMARY, on_click=show_settings)
-            ])
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(top=50, left=10, right=10, bottom=10),
-        bgcolor=AppColors.BACKGROUND
     )
 
     body_content = ft.Column([
