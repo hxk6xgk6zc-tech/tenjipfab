@@ -368,15 +368,21 @@ async def main(page: ft.Page):
         else:
             list_items = []
             for entry in history_list:
-                title = entry.get("text", "")
-                if len(title) > 20: title = title[:20] + "..."
-                subtitle = f"{entry.get('timestamp')} | {entry.get('max_chars_per_line')}字x{entry.get('max_lines_per_plate')}行"
+                # テキストの処理
+                raw_text = entry.get("text", "")
+                if len(raw_text) > 20:
+                    display_text = raw_text[:20] + "..."
+                else:
+                    display_text = raw_text
+                
+                # タイムスタンプ
+                timestamp = entry.get('timestamp', '')
                 
                 list_items.append(
                     ft.ListTile(
                         leading=ft.Icon(ft.Icons.HISTORY, color=AppColors.PRIMARY),
-                        title=ft.Text(title, weight=ft.FontWeight.BOLD),
-                        subtitle=ft.Text(subtitle, size=12),
+                        title=ft.Text(display_text, weight=ft.FontWeight.BOLD),
+                        subtitle=ft.Text(timestamp, size=12, color=AppColors.TEXT_SUB),
                         data=entry,
                         on_click=restore_history_entry
                     )
@@ -388,7 +394,7 @@ async def main(page: ft.Page):
             title=ft.Text("履歴 (タップして復元)"),
             content=content,
             actions=[
-                ft.TextButton("全削除", on_click=lambda e: _clear_history_handler(e)),
+                ft.TextButton("全削除", on_click=lambda e: _clear_history_handler(e), style=ft.ButtonStyle(color=AppColors.ERROR)),
                 ft.TextButton("閉じる", on_click=lambda e: page.close(history_dialog))
             ],
         )
