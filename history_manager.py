@@ -58,9 +58,16 @@ class HistoryManager:
 
     def set_history_limit(self, limit):
         """履歴の最大保存件数を設定"""
-        config = {}
+        self.save_settings({"history_limit": int(limit)})
+
+    def load_settings(self):
+        """設定全体を読み込む"""
         if self.page.client_storage.contains_key(self.config_key):
-            config = self.page.client_storage.get(self.config_key)
-        
-        config["history_limit"] = int(limit)
+            return self.page.client_storage.get(self.config_key)
+        return {}
+
+    def save_settings(self, new_settings):
+        """設定を保存（既存の設定とマージ）"""
+        config = self.load_settings()
+        config.update(new_settings)
         self.page.client_storage.set(self.config_key, config)
