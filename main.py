@@ -3,12 +3,6 @@ import asyncio
 import os
 from datetime import datetime
 
-import sys
-from pathlib import Path
-
-BASE = Path(__file__).parent
-sys.path.insert(0, str(BASE / "libs"))
-
 # モジュールインポート
 from styles import AppColors, TextStyles, ComponentStyles
 # 特殊符を確実にインポート
@@ -55,20 +49,23 @@ async def main(page: ft.Page):
         "use_quick_save": False
     }
 
-    # プラットフォーム判定 (モバイルならQuick Saveをデフォルト推奨だが、保存値があればそちらを優先するため後で判定)
-    is_mobile = page.platform in [ft.PagePlatform.IOS, ft.PagePlatform.ANDROID]
+    # --- プラットフォーム判定による保存方法のデフォルト設定 ---
+    if page.platform == ft.PagePlatform.MACOS:
+        # macOS: ダイアログが開かない問題があるため、Quick Save(直接保存)をデフォルトにする
+        settings["use_quick_save"] = True
+    else:
+        # その他(モバイル、Windows等): ユーザー要望によりダイアログ保存を優先(デフォルトFalse)
+        # ※ただしモバイルでFilePickerがサポートされていない場合は動作しない可能性があるため、
+        # 必要に応じて設定からQuick Saveに切り替えてもらう運用とする
+        settings["use_quick_save"] = False
 
     # --- 設定の読み込みと復元 ---
     saved_config = history_manager.load_settings()
     if saved_config:
-        # 設定キーが存在すれば上書き
+        # 保存された設定があれば上書き
         for key in settings.keys():
             if key in saved_config:
                 settings[key] = saved_config[key]
-    else:
-        # 初回起動時かつモバイルの場合のみデフォルトをQuickSaveにする
-        if is_mobile:
-            settings["use_quick_save"] = True
     
     txt_input_ref = ft.Ref[ft.TextField]()
     edit_field_ref = ft.Ref[ft.TextField]()
@@ -259,12 +256,11 @@ async def main(page: ft.Page):
         ],
     )
 
-    # --- 設定関連ハンドラ (変更時に自動保存) ---
     def on_chars_slider_change(e):
         settings["max_chars_per_line"] = int(e.control.value)
         e.control.label = f"{int(e.control.value)}文字"
         e.control.update()
-        history_manager.save_settings(settings) # 保存
+        history_manager.save_settings(settings)
         if current_mapped_data:
             render_braille_preview()
 
@@ -272,7 +268,7 @@ async def main(page: ft.Page):
         settings["max_lines_per_plate"] = int(e.control.value)
         e.control.label = f"{int(e.control.value)}行"
         e.control.update()
-        history_manager.save_settings(settings) # 保存
+        history_manager.save_settings(settings)
         if current_mapped_data:
             render_braille_preview()
 
@@ -280,12 +276,12 @@ async def main(page: ft.Page):
         settings["plate_thickness"] = float(e.control.value)
         e.control.label = f"{e.control.value:.1f}mm"
         e.control.update()
-        history_manager.save_settings(settings) # 保存
+        history_manager.save_settings(settings)
 
     def on_save_mode_change(e):
         settings["use_quick_save"] = e.control.value
         e.control.update()
-        history_manager.save_settings(settings) # 保存
+        history_manager.save_settings(settings)
         
     def on_history_limit_change(e):
         new_limit = int(e.control.value)
@@ -337,6 +333,7 @@ async def main(page: ft.Page):
                     label="Quick Save (直接保存)",
                     value=settings["use_quick_save"],
                     on_change=on_save_mode_change,
+                    tooltip="ダイアログを開かずに保存します（macOS等推奨）"
                 ),
             ], height=450, tight=True, scroll=ft.ScrollMode.AUTO),
             actions=[ft.TextButton("閉じる", on_click=lambda e: page.close(dlg))],
@@ -348,15 +345,12 @@ async def main(page: ft.Page):
         """履歴アイテムがタップされたときの復元処理"""
         entry = e.control.data
         
-        # 1. 設定の復元 (settings辞書とUIの両方を更新)
         settings["max_chars_per_line"] = entry.get("max_chars_per_line", 10)
         settings["max_lines_per_plate"] = entry.get("max_lines_per_plate", 3)
         settings["plate_thickness"] = entry.get("plate_thickness", 1.0)
         
-        # 現在の設定値も保存しておく（次回起動時のため）
         history_manager.save_settings(settings)
         
-        # 2. テキストの復元と変換
         if txt_input_ref.current:
             txt_input_ref.current.value = entry.get("text", "")
             txt_input_ref.current.update()
@@ -374,14 +368,12 @@ async def main(page: ft.Page):
         else:
             list_items = []
             for entry in history_list:
-                # テキストの処理
                 raw_text = entry.get("text", "")
                 if len(raw_text) > 20:
                     display_text = raw_text[:20] + "..."
                 else:
                     display_text = raw_text
                 
-                # タイムスタンプ
                 timestamp = entry.get('timestamp', '')
                 
                 list_items.append(
