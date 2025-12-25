@@ -5,8 +5,12 @@ from datetime import datetime
 
 # モジュールインポート
 from styles import AppColors, TextStyles, ComponentStyles
-# braille_logicはjanomeを使用するように変更済み
-from braille_logic import BrailleConverter, SPACE_MARK
+# 特殊符を確実にインポート
+from braille_logic import (
+    BrailleConverter, SPACE_MARK,
+    DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
+    YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
+)
 from stl_generator import STLGenerator
 
 async def main(page: ft.Page):
@@ -18,68 +22,92 @@ async def main(page: ft.Page):
     page.window_height = 844
     page.padding = 0
     
-    # Mac対策: アプリ起動時にウィンドウを最前面に持ってくる
     try:
         page.window_to_front()
     except:
         pass
 
-    # ファイル保存用ダイアログの準備 (Overlayに追加)
     file_picker = ft.FilePicker()
     page.overlay.append(file_picker)
     page.update()
 
-    # ロジッククラスの初期化
     converter = BrailleConverter()
     stl_generator = STLGenerator()
     
-    # --- 2. 状態管理変数 ---
     current_mapped_data = [] 
     editing_index = -1       
     settings = {
         "max_chars_per_line": 10,
         "max_lines_per_plate": 3,
+        "plate_thickness": 1.0, # 初期値1.0mm
         "scale": 1.0,
         "pause_for_color": False
     }
     
-    # UI参照用のRef
     txt_input_ref = ft.Ref[ft.TextField]()
     edit_field_ref = ft.Ref[ft.TextField]()
     chars_slider_ref = ft.Ref[ft.Slider]()
     lines_slider_ref = ft.Ref[ft.Slider]()
+    thickness_slider_ref = ft.Ref[ft.Slider]() # 追加
 
-    # かな変換ライブラリの動作チェック
-    # braille_logic側でJanomeの初期化に失敗した場合のフラグチェック
     if not converter.use_kakasi:
-        error_detail = getattr(converter, 'error_msg', 'Unknown Error')
         page.snack_bar = ft.SnackBar(
-            content=ft.Text(f"⚠️ かな変換機能が無効です ({error_detail})\nひらがなで入力してください"),
+            content=ft.Text(f"⚠️ かな変換機能が無効です (Pykakasi未検出)\nひらがなで入力してください"),
             bgcolor=AppColors.ERROR,
             duration=5000,
-            action="OK"
         )
         page.snack_bar.open = True
         page.update()
 
     def _make_dot(is_active):
-        """点字のドット1つを生成する"""
         return ft.Container(
             width=8, height=8,
             bgcolor=AppColors.DOT_ACTIVE if is_active else AppColors.DOT_INACTIVE,
             border_radius=4,
         )
 
-    # 点字プレビューを表示するエリア (スクロール可能)
     braille_display_area = ft.Column(
         scroll=ft.ScrollMode.AUTO,
         spacing=10, 
     )
 
-    # --- 4. イベントハンドラ ---
+    # --- 禁則処理付き行分割ロジック ---
+    def split_cells_with_rules(all_cells, max_chars):
+        lines = []
+        current_line = []
+        units = []
+        i = 0
+        prefix_marks_vals = {
+            tuple(DAKUTEN_MARK), tuple(HANDAKUTEN_MARK), tuple(YOON_MARK),
+            tuple(YOON_DAKU_MARK), tuple(YOON_HANDAKU_MARK), tuple(NUM_INDICATOR), tuple(FOREIGN_INDICATOR)
+        }
+        
+        while i < len(all_cells):
+            cell = all_cells[i]
+            cell_dots_tuple = tuple(cell['dots'])
+            is_prefix = (cell_dots_tuple in prefix_marks_vals)
+            
+            if is_prefix and i + 1 < len(all_cells):
+                units.append([cell, all_cells[i+1]])
+                i += 2
+            else:
+                units.append([cell])
+                i += 1
+                
+        for unit in units:
+            unit_len = len(unit)
+            if len(current_line) + unit_len > max_chars:
+                if len(current_line) > 0:
+                    lines.append(current_line)
+                    current_line = []
+            current_line.extend(unit)
+            
+        if current_line:
+            lines.append(current_line)
+            
+        return lines
 
     def open_edit_dialog(index):
-        """読み修正ダイアログを開く"""
         nonlocal editing_index
         editing_index = index
         item = current_mapped_data[index]
@@ -89,10 +117,8 @@ async def main(page: ft.Page):
         page.open(edit_dialog)
 
     def render_braille_preview():
-        """現在のデータをもとに点字プレビューを再描画する"""
         braille_display_area.controls.clear()
         
-        # 表示用にデータをフラットなリストに変換（スペース挿入）
         flat_cells_all = []
         for word_idx, item in enumerate(current_mapped_data):
             for cell in item['cells']:
@@ -102,7 +128,6 @@ async def main(page: ft.Page):
                     'word_idx': word_idx, 
                     'orig': item['orig']
                 })
-            # 単語区切りのスペース (最後以外)
             if word_idx < len(current_mapped_data) - 1:
                 flat_cells_all.append({
                     'dots': SPACE_MARK,
@@ -111,17 +136,14 @@ async def main(page: ft.Page):
                     'orig': '(Space)'
                 })
         
-        # 設定された文字数で分割（プレート分け）
-        chunk_size = settings["max_chars_per_line"]
-        if chunk_size <= 0: chunk_size = 10
-
-        # 行ごとのリストを作成
-        lines_list = [flat_cells_all[i:i + chunk_size] for i in range(0, len(flat_cells_all), chunk_size)]
-        
-        # プレートごとのリストを作成
+        chars_per_line = settings["max_chars_per_line"]
         lines_per_plate = settings["max_lines_per_plate"]
+        
+        if chars_per_line <= 0: chars_per_line = 10
         if lines_per_plate <= 0: lines_per_plate = 1
-        plates = [lines_list[i:i + lines_per_plate] for i in range(0, len(lines_list), lines_per_plate)]
+
+        lines = split_cells_with_rules(flat_cells_all, chars_per_line)
+        plates = [lines[i:i + lines_per_plate] for i in range(0, len(lines), lines_per_plate)]
 
         for i, plate_lines in enumerate(plates):
             plate_num = i + 1
@@ -136,7 +158,6 @@ async def main(page: ft.Page):
                     char_str = cell_info['char']
                     word_idx = cell_info['word_idx']
                     
-                    # 点字の列 (左・右)
                     col1 = ft.Column(spacing=2, controls=[
                         _make_dot(cell_dots[0]), _make_dot(cell_dots[1]), _make_dot(cell_dots[2])
                     ])
@@ -144,7 +165,6 @@ async def main(page: ft.Page):
                         _make_dot(cell_dots[3]), _make_dot(cell_dots[4]), _make_dot(cell_dots[5])
                     ])
                     
-                    # 1文字分のUI
                     cell_ui = ft.Container(
                         content=ft.Column([
                             ft.Container(
@@ -157,18 +177,15 @@ async def main(page: ft.Page):
                             ft.Text(char_str, style=TextStyles.READING, text_align=ft.TextAlign.CENTER, width=20)
                         ], spacing=2, alignment=ft.MainAxisAlignment.CENTER),
                         
-                        # クリックで編集 (スペース以外)
                         on_click=lambda e, idx=word_idx: open_edit_dialog(idx) if idx != -1 else None,
                         tooltip=f"元の単語: {cell_info['orig']}" if word_idx != -1 else None
                     )
                     row_controls.append(cell_ui)
                 
-                # 行コンテナ
                 plate_content_controls.append(
                     ft.Row(row_controls, spacing=8, alignment=ft.MainAxisAlignment.START, scroll=ft.ScrollMode.ALWAYS)
                 )
 
-            # プレート全体をまとめるコンテナ
             plate_ui = ft.Column([
                 header_text,
                 ft.Container(
@@ -183,33 +200,26 @@ async def main(page: ft.Page):
             
             braille_display_area.controls.append(plate_ui)
             
-        # ページ全体を更新して反映
         page.update()
 
     def update_braille_from_input(text):
-        """テキスト入力時に点字変換を実行"""
         nonlocal current_mapped_data
         current_mapped_data = converter.convert_with_mapping(text)
         render_braille_preview()
 
     def save_reading_edit(e):
-        """読み修正の保存"""
         nonlocal current_mapped_data
         if editing_index < 0: return
         new_reading = edit_field_ref.current.value
         if new_reading:
             current_mapped_data[editing_index]['reading'] = new_reading
-            # 再変換
             new_cells = converter.kana_to_cells(new_reading)
             current_mapped_data[editing_index]['cells'] = new_cells
-            # 互換性のためdotsも更新
             current_mapped_data[editing_index]['braille'] = [c['dots'] for c in new_cells]
-            
             render_braille_preview()
             page.open(ft.SnackBar(content=ft.Text(f"読みを修正しました")))
         page.close(edit_dialog)
 
-    # 編集ダイアログ定義
     edit_dialog = ft.AlertDialog(
         title=ft.Text("読みの修正"),
         content=ft.TextField(ref=edit_field_ref, autofocus=True, label="読み（ひらがな）"),
@@ -233,8 +243,13 @@ async def main(page: ft.Page):
         if current_mapped_data:
             render_braille_preview()
 
+    def on_thickness_slider_change(e):
+        # 厚み変更時は再描画不要（STL出力時にのみ使用）
+        settings["plate_thickness"] = float(e.control.value)
+        e.control.label = f"{e.control.value:.1f}mm"
+        e.control.update()
+
     def show_settings(e):
-        """設定ダイアログを表示"""
         dlg = ft.AlertDialog(
             title=ft.Text("出力設定"),
             content=ft.Column([
@@ -254,57 +269,52 @@ async def main(page: ft.Page):
                     label=f"{settings['max_lines_per_plate']}行",
                     on_change=on_lines_slider_change
                 ),
+                ft.Text("プレートの厚み", size=14),
+                ft.Slider(
+                    ref=thickness_slider_ref,
+                    min=0.5, max=1.5, divisions=10, 
+                    value=settings["plate_thickness"], 
+                    label=f"{settings['plate_thickness']:.1f}mm",
+                    on_change=on_thickness_slider_change
+                ),
                 ft.Text("ドットサイズ (Scale)", size=14),
                 ft.Slider(min=0.8, max=1.5, divisions=7, label="{value}x", value=settings["scale"]),
-                ft.Checkbox(label="色変え停止 (Layer Pause)", value=settings["pause_for_color"]),
-            ], height=300, tight=True),
+            ], height=350, tight=True),
             actions=[ft.TextButton("閉じる", on_click=lambda e: page.close(dlg))],
         )
         page.open(dlg)
 
-    # --- 保存関連処理 ---
-
+    # --- 保存処理 ---
     def get_structured_data_for_export():
-        """エクスポート用に禁則処理済みの構造化データ(plates > lines > cells)を生成"""
-        # 1. フラット化
         flat_cells_all = []
         for word_idx, item in enumerate(current_mapped_data):
             for cell in item['cells']:
-                flat_cells_all.append(cell) # cellは辞書
+                flat_cells_all.append(cell) 
             if word_idx < len(current_mapped_data) - 1:
                 flat_cells_all.append({'dots': SPACE_MARK, 'char': ' '})
         
-        # 行分割ロジックはmain内に関数定義していないため、簡易的に文字数分割を行う
-        # (厳密な禁則処理付き分割関数が必要なら、braille_logic.pyに移譲するかここで再定義する)
-        
-        chars_per_line = settings["max_chars_per_line"]
+        lines = split_cells_with_rules(flat_cells_all, settings["max_chars_per_line"])
         lines_per_plate = settings["max_lines_per_plate"]
-        
-        # 行分割
-        lines = [flat_cells_all[i:i + chars_per_line] for i in range(0, len(flat_cells_all), chars_per_line)]
-        
-        # プレート分割
         plates = [lines[i:i + lines_per_plate] for i in range(0, len(lines), lines_per_plate)]
-        
         return plates
 
     def handle_save_dialog_click(e):
-        """保存ダイアログを開く"""
         if not current_mapped_data:
             page.open(ft.SnackBar(content=ft.Text("データがありません。")))
             return
-        
-        file_picker.save_file(dialog_title="名前を付けて保存")
+        page.update()
+        file_picker.save_file(dialog_title="パッケージを保存")
 
     def on_file_picked(e: ft.FilePickerResultEvent):
-        """ダイアログでファイルが選択された時の処理"""
         if e.path:
             try:
                 plates_data = get_structured_data_for_export()
                 original_txt = txt_input_ref.current.value if txt_input_ref.current else ""
                 
                 stl_generator.generate_package_from_plates(
-                    plates_data, e.path, original_text_str=original_txt
+                    plates_data, e.path, 
+                    original_text_str=original_txt,
+                    base_thickness=settings["plate_thickness"] # 厚み設定を渡す
                 )
                 page.open(ft.SnackBar(content=ft.Text(f"保存しました: {os.path.basename(e.path)}")))
             except Exception as ex:
@@ -313,7 +323,6 @@ async def main(page: ft.Page):
     file_picker.on_result = on_file_picked
 
     def handle_quick_save_click(e):
-        """ダウンロードフォルダへ直接保存 (Sandbox対策)"""
         if not current_mapped_data:
             page.open(ft.SnackBar(content=ft.Text("データがありません。")))
             return
@@ -329,7 +338,9 @@ async def main(page: ft.Page):
             original_txt = txt_input_ref.current.value if txt_input_ref.current else ""
             
             stl_generator.generate_package_from_plates(
-                plates_data, save_path, original_text_str=original_txt
+                plates_data, save_path, 
+                original_text_str=original_txt,
+                base_thickness=settings["plate_thickness"] # 厚み設定を渡す
             )
             
             page.open(ft.SnackBar(
@@ -340,8 +351,7 @@ async def main(page: ft.Page):
         except Exception as ex:
             page.open(ft.SnackBar(content=ft.Text(f"保存失敗: {str(ex)}"), bgcolor=AppColors.ERROR))
 
-    # --- 5. UI構築 ---
-    
+    # --- UI構築 ---
     txt_input = ft.TextField(
         ref=txt_input_ref,
         multiline=True, min_lines=3, max_lines=5,
@@ -349,14 +359,6 @@ async def main(page: ft.Page):
         border=ft.InputBorder.NONE,
         text_style=TextStyles.BODY,
         on_change=lambda e: update_braille_from_input(e.control.value)
-    )
-
-    drawer = ft.NavigationDrawer(
-        controls=[
-            ft.Container(height=12),
-            ft.NavigationDrawerDestination(label="履歴", icon="history"),
-            ft.NavigationDrawerDestination(label="設定", icon="settings"),
-        ],
     )
 
     header = ft.Container(
@@ -372,8 +374,15 @@ async def main(page: ft.Page):
         bgcolor=AppColors.BACKGROUND
     )
 
+    drawer = ft.NavigationDrawer(
+        controls=[
+            ft.Container(height=12),
+            ft.NavigationDrawerDestination(label="履歴", icon="history"),
+            ft.NavigationDrawerDestination(label="設定", icon="settings"),
+        ],
+    )
+
     body_content = ft.Column([
-        # 上部: プレビューエリア
         ft.Container(
             content=ft.Column([
                 ft.Text("Braille Preview (Tap to edit)", style=TextStyles.CAPTION),
@@ -387,7 +396,6 @@ async def main(page: ft.Page):
             expand=True, 
             bgcolor=AppColors.BACKGROUND,
         ),
-        # 下部: 入力エリア & ボタン
         ft.Container(
             content=ft.Column([
                 ft.Text("Input Text", style=TextStyles.CAPTION),
@@ -398,7 +406,6 @@ async def main(page: ft.Page):
                         ft.Row([
                             ft.IconButton(icon="mic", icon_color=AppColors.PRIMARY),
                             ft.Container(width=10),
-                            # 保存ボタン (Dialog)
                             ft.ElevatedButton(
                                 "保存 (Dialog)", 
                                 icon="save",
@@ -407,7 +414,6 @@ async def main(page: ft.Page):
                                 expand=True
                             ),
                             ft.Container(width=10),
-                            # 保存ボタン (Quick Save)
                             ft.ElevatedButton(
                                 "Quick Save", 
                                 icon="download",
@@ -430,10 +436,8 @@ async def main(page: ft.Page):
         )
     ], spacing=0, expand=True)
 
-    # ビューの構築
     main_view = ft.View("/", controls=[header, body_content], bgcolor=AppColors.BACKGROUND, padding=0, drawer=drawer)
     
-    # スプラッシュ画面
     splash_content = ft.Container(
         content=ft.Column(
             [ft.Icon(name="grid_on_rounded", size=80, color=AppColors.SURFACE),
