@@ -3,6 +3,12 @@ import asyncio
 import os
 from datetime import datetime
 
+import sys
+from pathlib import Path
+
+BASE = Path(__file__).parent
+sys.path.insert(0, str(BASE / "libs"))
+
 # モジュールインポート
 from styles import AppColors, TextStyles, ComponentStyles
 # 特殊符を確実にインポート
