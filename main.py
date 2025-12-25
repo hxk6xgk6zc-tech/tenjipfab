@@ -5,13 +5,9 @@ from datetime import datetime
 
 # モジュールインポート
 from styles import AppColors, TextStyles, ComponentStyles
-# 特殊符を確実にインポート
-from braille_logic import (
-    BrailleConverter, SPACE_MARK,
-    DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
-    YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
-)
+from braille_logic import BrailleConverter, SPACE_MARK
 from stl_generator import STLGenerator
+from history_manager import HistoryManager # 追加
 
 async def main(page: ft.Page):
     # --- 1. アプリ全体の初期設定 ---
@@ -33,28 +29,40 @@ async def main(page: ft.Page):
 
     converter = BrailleConverter()
     stl_generator = STLGenerator()
+    history_manager = HistoryManager(page) # 履歴マネージャー初期化
     
     current_mapped_data = [] 
     editing_index = -1       
+    
+    # 設定の初期化
     settings = {
         "max_chars_per_line": 10,
         "max_lines_per_plate": 3,
-        "plate_thickness": 1.0, # 初期値1.0mm
+        "plate_thickness": 1.0, 
         "scale": 1.0,
-        "pause_for_color": False
+        "pause_for_color": False,
+        "use_quick_save": False
     }
+
+    # プラットフォーム判定
+    if page.platform in [ft.PagePlatform.IOS, ft.PagePlatform.ANDROID]:
+        settings["use_quick_save"] = True
     
     txt_input_ref = ft.Ref[ft.TextField]()
     edit_field_ref = ft.Ref[ft.TextField]()
     chars_slider_ref = ft.Ref[ft.Slider]()
     lines_slider_ref = ft.Ref[ft.Slider]()
-    thickness_slider_ref = ft.Ref[ft.Slider]() # 追加
+    thickness_slider_ref = ft.Ref[ft.Slider]() 
+    
+    # 履歴設定用
+    history_limit_slider_ref = ft.Ref[ft.Slider]()
 
     if not converter.use_kakasi:
         page.snack_bar = ft.SnackBar(
-            content=ft.Text(f"⚠️ かな変換機能が無効です (Pykakasi未検出)\nひらがなで入力してください"),
+            content=ft.Text(f"⚠️ かな変換機能が無効です\nひらがなで入力してください"),
             bgcolor=AppColors.ERROR,
             duration=5000,
+            action="OK"
         )
         page.snack_bar.open = True
         page.update()
@@ -71,12 +79,17 @@ async def main(page: ft.Page):
         spacing=10, 
     )
 
-    # --- 禁則処理付き行分割ロジック ---
+    # --- 禁則処理付き行分割ロジック (省略せず記述) ---
     def split_cells_with_rules(all_cells, max_chars):
         lines = []
         current_line = []
         units = []
         i = 0
+        # braille_logicからインポートした定数を使用
+        from braille_logic import (
+            DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
+            YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
+        )
         prefix_marks_vals = {
             tuple(DAKUTEN_MARK), tuple(HANDAKUTEN_MARK), tuple(YOON_MARK),
             tuple(YOON_DAKU_MARK), tuple(YOON_HANDAKU_MARK), tuple(NUM_INDICATOR), tuple(FOREIGN_INDICATOR)
@@ -104,7 +117,6 @@ async def main(page: ft.Page):
             
         if current_line:
             lines.append(current_line)
-            
         return lines
 
     def open_edit_dialog(index):
@@ -229,6 +241,7 @@ async def main(page: ft.Page):
         ],
     )
 
+    # --- 設定関連ハンドラ ---
     def on_chars_slider_change(e):
         settings["max_chars_per_line"] = int(e.control.value)
         e.control.label = f"{int(e.control.value)}文字"
@@ -244,12 +257,23 @@ async def main(page: ft.Page):
             render_braille_preview()
 
     def on_thickness_slider_change(e):
-        # 厚み変更時は再描画不要（STL出力時にのみ使用）
         settings["plate_thickness"] = float(e.control.value)
         e.control.label = f"{e.control.value:.1f}mm"
         e.control.update()
 
+    def on_save_mode_change(e):
+        settings["use_quick_save"] = e.control.value
+        e.control.update()
+        
+    def on_history_limit_change(e):
+        new_limit = int(e.control.value)
+        history_manager.set_history_limit(new_limit)
+        e.control.label = f"{new_limit}件"
+        e.control.update()
+
     def show_settings(e):
+        current_limit = history_manager.get_history_limit()
+        
         dlg = ft.AlertDialog(
             title=ft.Text("出力設定"),
             content=ft.Column([
@@ -277,12 +301,86 @@ async def main(page: ft.Page):
                     label=f"{settings['plate_thickness']:.1f}mm",
                     on_change=on_thickness_slider_change
                 ),
-                ft.Text("ドットサイズ (Scale)", size=14),
-                ft.Slider(min=0.8, max=1.5, divisions=7, label="{value}x", value=settings["scale"]),
-            ], height=350, tight=True),
+                ft.Divider(),
+                ft.Text("履歴保存件数", size=14),
+                ft.Slider(
+                    ref=history_limit_slider_ref,
+                    min=5, max=50, divisions=9,
+                    value=current_limit,
+                    label=f"{current_limit}件",
+                    on_change=on_history_limit_change
+                ),
+                ft.Divider(),
+                ft.Switch(
+                    label="Quick Save (直接保存)",
+                    value=settings["use_quick_save"],
+                    on_change=on_save_mode_change,
+                ),
+            ], height=450, tight=True, scroll=ft.ScrollMode.AUTO),
             actions=[ft.TextButton("閉じる", on_click=lambda e: page.close(dlg))],
         )
         page.open(dlg)
+
+    # --- 履歴機能 ---
+    
+    def restore_history_entry(e):
+        """履歴アイテムがタップされたときの復元処理"""
+        entry = e.control.data
+        
+        # 1. 設定の復元
+        settings["max_chars_per_line"] = entry.get("max_chars_per_line", 10)
+        settings["max_lines_per_plate"] = entry.get("max_lines_per_plate", 3)
+        settings["plate_thickness"] = entry.get("plate_thickness", 1.0)
+        
+        # 2. テキストの復元と変換
+        if txt_input_ref.current:
+            txt_input_ref.current.value = entry.get("text", "")
+            txt_input_ref.current.update()
+            update_braille_from_input(txt_input_ref.current.value)
+            
+        page.close(history_dialog)
+        page.open(ft.SnackBar(content=ft.Text("履歴から復元しました")))
+
+    def show_history_dialog(e):
+        """履歴一覧ダイアログを表示"""
+        history_list = history_manager.get_history()
+        
+        if not history_list:
+            content = ft.Text("履歴はありません", color=AppColors.TEXT_SUB)
+        else:
+            list_items = []
+            for entry in history_list:
+                # 日時とテキストの要約
+                title = entry.get("text", "")
+                if len(title) > 20: title = title[:20] + "..."
+                subtitle = f"{entry.get('timestamp')} | {entry.get('max_chars_per_line')}字x{entry.get('max_lines_per_plate')}行"
+                
+                list_items.append(
+                    ft.ListTile(
+                        leading=ft.Icon(ft.Icons.HISTORY, color=AppColors.PRIMARY),
+                        title=ft.Text(title, weight=ft.FontWeight.BOLD),
+                        subtitle=ft.Text(subtitle, size=12),
+                        data=entry,
+                        on_click=restore_history_entry
+                    )
+                )
+            content = ft.ListView(controls=list_items, height=300)
+
+        global history_dialog
+        history_dialog = ft.AlertDialog(
+            title=ft.Text("履歴 (タップして復元)"),
+            content=content,
+            actions=[
+                ft.TextButton("全削除", on_click=lambda e: _clear_history_handler(e)),
+                ft.TextButton("閉じる", on_click=lambda e: page.close(history_dialog))
+            ],
+        )
+        page.open(history_dialog)
+
+    def _clear_history_handler(e):
+        history_manager.clear_history()
+        page.close(history_dialog)
+        page.open(ft.SnackBar(content=ft.Text("履歴を削除しました")))
 
     # --- 保存処理 ---
     def get_structured_data_for_export():
@@ -298,35 +396,30 @@ async def main(page: ft.Page):
         plates = [lines[i:i + lines_per_plate] for i in range(0, len(lines), lines_per_plate)]
         return plates
 
-    def handle_save_dialog_click(e):
-        if not current_mapped_data:
-            page.open(ft.SnackBar(content=ft.Text("データがありません。")))
-            return
-        page.update()
-        file_picker.save_file(dialog_title="パッケージを保存")
+    def _on_save_success(path):
+        """保存成功時の共通処理 (履歴追加など)"""
+        # 履歴に追加
+        text = txt_input_ref.current.value if txt_input_ref.current else ""
+        if text:
+            history_manager.add_entry(text, settings)
+            
+        page.open(ft.SnackBar(content=ft.Text(f"保存しました: {os.path.basename(path)}")))
 
-    def on_file_picked(e: ft.FilePickerResultEvent):
-        if e.path:
-            try:
-                plates_data = get_structured_data_for_export()
-                original_txt = txt_input_ref.current.value if txt_input_ref.current else ""
-                
-                stl_generator.generate_package_from_plates(
-                    plates_data, e.path, 
-                    original_text_str=original_txt,
-                    base_thickness=settings["plate_thickness"] # 厚み設定を渡す
-                )
-                page.open(ft.SnackBar(content=ft.Text(f"保存しました: {os.path.basename(e.path)}")))
-            except Exception as ex:
-                page.open(ft.SnackBar(content=ft.Text(f"エラー: {str(ex)}"), bgcolor=AppColors.ERROR))
-
-    file_picker.on_result = on_file_picked
-
-    def handle_quick_save_click(e):
+    def handle_save_button_click(e):
         if not current_mapped_data:
             page.open(ft.SnackBar(content=ft.Text("データがありません。")))
             return
         
+        if settings["use_quick_save"]:
+            handle_quick_save()
+        else:
+            handle_dialog_save()
+
+    def handle_dialog_save():
+        page.update()
+        file_picker.save_file(dialog_title="パッケージを保存")
+
+    def handle_quick_save():
         try:
             home_dir = os.path.expanduser("~")
             download_dir = os.path.join(home_dir, "Downloads")
@@ -334,15 +427,13 @@ async def main(page: ft.Page):
             filename = f"tenji_export_{timestamp}.zip"
             save_path = os.path.join(download_dir, filename)
             
-            plates_data = get_structured_data_for_export()
-            original_txt = txt_input_ref.current.value if txt_input_ref.current else ""
+            _perform_export(save_path)
             
-            stl_generator.generate_package_from_plates(
-                plates_data, save_path, 
-                original_text_str=original_txt,
-                base_thickness=settings["plate_thickness"] # 厚み設定を渡す
-            )
-            
+            # Quick Save成功時はトーストと履歴追加
+            text = txt_input_ref.current.value if txt_input_ref.current else ""
+            if text:
+                history_manager.add_entry(text, settings)
+                
             page.open(ft.SnackBar(
                 content=ft.Text(f"ダウンロードフォルダに保存しました:\n{filename}"),
                 action="OK",
@@ -350,6 +441,26 @@ async def main(page: ft.Page):
             ))
         except Exception as ex:
             page.open(ft.SnackBar(content=ft.Text(f"保存失敗: {str(ex)}"), bgcolor=AppColors.ERROR))
+
+    def on_file_picked(e: ft.FilePickerResultEvent):
+        if e.path:
+            try:
+                _perform_export(e.path)
+                _on_save_success(e.path)
+            except Exception as ex:
+                page.open(ft.SnackBar(content=ft.Text(f"エラー: {str(ex)}"), bgcolor=AppColors.ERROR))
+
+    def _perform_export(path):
+        plates_data = get_structured_data_for_export()
+        original_txt = txt_input_ref.current.value if txt_input_ref.current else ""
+        
+        stl_generator.generate_package_from_plates(
+            plates_data, path, 
+            original_text_str=original_txt,
+            base_thickness=settings["plate_thickness"]
+        )
+
+    file_picker.on_result = on_file_picked
 
     # --- UI構築 ---
     txt_input = ft.TextField(
@@ -361,12 +472,28 @@ async def main(page: ft.Page):
         on_change=lambda e: update_braille_from_input(e.control.value)
     )
 
+    # ドロワー
+    drawer = ft.NavigationDrawer(
+        controls=[
+            ft.Container(height=12),
+            ft.NavigationDrawerDestination(
+                label="履歴", 
+                icon=ft.Icons.HISTORY
+            ),
+            ft.NavigationDrawerDestination(
+                label="設定", 
+                icon=ft.Icons.SETTINGS
+            ),
+        ],
+        on_change=lambda e: show_history_dialog(e) if e.control.selected_index == 0 else show_settings(e)
+    )
+
     header = ft.Container(
         content=ft.Row([
             ft.IconButton(icon="menu", icon_color=AppColors.PRIMARY, on_click=lambda e: page.open(drawer)),
             ft.Text("Tenji P-Fab", style=TextStyles.HEADER),
             ft.Row([
-                ft.IconButton(icon="save_alt", icon_color=AppColors.PRIMARY, tooltip="保存", on_click=handle_save_dialog_click),
+                ft.IconButton(icon="save_alt", icon_color=AppColors.PRIMARY, tooltip="保存", on_click=handle_save_button_click),
                 ft.IconButton(icon="settings", icon_color=AppColors.PRIMARY, on_click=show_settings)
             ])
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
@@ -374,15 +501,8 @@ async def main(page: ft.Page):
         bgcolor=AppColors.BACKGROUND
     )
 
-    drawer = ft.NavigationDrawer(
-        controls=[
-            ft.Container(height=12),
-            ft.NavigationDrawerDestination(label="履歴", icon="history"),
-            ft.NavigationDrawerDestination(label="設定", icon="settings"),
-        ],
-    )
-
     body_content = ft.Column([
+        # 上部: プレビューエリア
         ft.Container(
             content=ft.Column([
                 ft.Text("Braille Preview (Tap to edit)", style=TextStyles.CAPTION),
@@ -396,6 +516,7 @@ async def main(page: ft.Page):
             expand=True, 
             bgcolor=AppColors.BACKGROUND,
         ),
+        # 下部: 入力エリア & ボタン
         ft.Container(
             content=ft.Column([
                 ft.Text("Input Text", style=TextStyles.CAPTION),
@@ -406,20 +527,12 @@ async def main(page: ft.Page):
                         ft.Row([
                             ft.IconButton(icon="mic", icon_color=AppColors.PRIMARY),
                             ft.Container(width=10),
+                            # 統合された保存ボタン
                             ft.ElevatedButton(
-                                "保存 (Dialog)", 
+                                "保存", 
                                 icon="save",
                                 style=ComponentStyles.MAIN_BUTTON_STYLE,
-                                on_click=handle_save_dialog_click,
-                                expand=True
-                            ),
-                            ft.Container(width=10),
-                            ft.ElevatedButton(
-                                "Quick Save", 
-                                icon="download",
-                                style=ComponentStyles.SUB_BUTTON_STYLE,
-                                on_click=handle_quick_save_click,
-                                tooltip="ダウンロードフォルダに直接保存",
+                                on_click=handle_save_button_click,
                                 expand=True
                             )
                         ])
