@@ -13,6 +13,12 @@ def run_command(command, cwd=None):
 def main():
     print("🚀 Starting macOS Build Process...")
 
+    # デバッグ: カレントディレクトリ情報の表示
+    print(f"Current Directory: {os.getcwd()}")
+    if not os.path.exists("main.py"):
+        print("❌ Error: main.py not found in current directory.")
+        sys.exit(1)
+
     # 0. 依存ライブラリの確認とインストール
     if os.path.exists("requirements.txt"):
         print("Installing dependencies from requirements.txt...")
@@ -24,24 +30,24 @@ def main():
         run_command("rm -rf build")
 
     # 2. Fletによるベースプロジェクトの生成
-    # main.pyを明示的に指定して、Not Foundエラーを回避します
+    # 修正: --project . を指定してカレントディレクトリをルートとする
     print("Generating Flutter project...")
-    run_command("flet build macos --project main.py --no-android --no-ios")
+    run_command("flet build macos --project . --no-android --no-ios")
 
     # 3. Entitlements（権限ファイル）の検索と修正
     print("Injecting permissions...")
-    entitlements_path = "build/macos/Runner/Release.entitlements"
     
     # パスが変わる可能性があるため検索する
-    if not os.path.exists(entitlements_path):
-        # findコマンドで探す (build/flutter/macos... の場合などに対応)
-        import glob
-        found = glob.glob("build/**/Release.entitlements", recursive=True)
-        if found:
-            entitlements_path = found[0]
-        else:
-            print("Error: Entitlements file not found.")
-            sys.exit(1)
+    entitlements_path = None
+    import glob
+    # 再帰的に検索
+    found = glob.glob("build/**/Release.entitlements", recursive=True)
+    if found:
+        entitlements_path = found[0]
+        print(f"Found entitlements at: {entitlements_path}")
+    else:
+        print("Error: Entitlements file not found.")
+        sys.exit(1)
 
     print(f"Editing: {entitlements_path}")
     
@@ -69,13 +75,25 @@ def main():
 
     # 4. Flutterによる再ビルド（変更を反映）
     # Entitlementsファイルがあるディレクトリの親の親... (Flutterプロジェクトルート) を探す
-    flutter_root = os.path.dirname(os.path.dirname(os.path.dirname(entitlements_path)))
-    
+    path_parts = entitlements_path.split(os.sep)
+    try:
+        # build/flutter/macos/Runner/... -> build/flutter がルート
+        macos_index = path_parts.index('macos')
+        flutter_root = os.sep.join(path_parts[:macos_index])
+    except ValueError:
+        print("Could not determine Flutter root. Trying 'build/flutter'...")
+        flutter_root = "build/flutter" # 最近のバージョンのデフォルト
+
     print(f"Rebuilding with Flutter in {flutter_root}...")
+    
+    if not os.path.exists(flutter_root):
+        print(f"Error: Flutter root '{flutter_root}' does not exist.")
+        sys.exit(1)
+
     run_command("flutter build macos --release", cwd=flutter_root)
 
     print("\n🎉 Build Complete!")
-    print(f"App location: {flutter_root}/build/macos/Build/Products/Release/Tenji P-Fab.app")
+    print(f"Check the output in: {flutter_root}/build/macos/Build/Products/Release/")
 
 if __name__ == "__main__":
     main()
