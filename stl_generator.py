@@ -17,6 +17,10 @@ class STLGenerator:
         with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.writestr("original_text.txt", original_text_str.encode('utf-8'))
             
+            # BSE出力
+            bse_content = self._generate_bse_content(plates_data)
+            zipf.writestr("braille.bse", bse_content.encode('utf-8'))
+
             pages_info = []
             for i, plate_lines in enumerate(plates_data):
                 page_num = i + 1
@@ -39,11 +43,44 @@ class STLGenerator:
 
             for info in pages_info:
                 stl_filename = f"plate_{info['page_num']:02d}.stl"
-                # 厚みパラメータを渡す
                 stl_data = self._create_plate_stl(info['body_lines_dots'], info['page_dots'], base_thickness)
                 zipf.writestr(stl_filename, stl_data)
         
         return output_zip_path
+
+    def _generate_bse_content(self, plates_data):
+        """BSE形式(Braille ASCII)に変換"""
+        ascii_map = {
+            0x00: ' ', 0x01: 'a', 0x03: 'b', 0x09: 'c', 0x19: 'd', 0x11: 'e',
+            0x0B: 'f', 0x1B: 'g', 0x13: 'h', 0x0A: 'i', 0x1A: 'j', 0x05: 'k',
+            0x07: 'l', 0x0D: 'm', 0x1D: 'n', 0x15: 'o', 0x0F: 'p', 0x1F: 'q',
+            0x17: 'r', 0x0E: 's', 0x1E: 't', 0x25: 'u', 0x27: 'v', 0x3A: 'w',
+            0x2D: 'x', 0x3D: 'y', 0x35: 'z',
+            0x3C: '#', 0x30: ';', 0x10: '"', 0x20: ',', 0x08: '@', 0x18: '^', 0x28: '_',
+            0x02: '1', 0x06: '2', 0x12: '3', 0x32: '4', 0x22: '5', 0x16: '6',
+            0x36: '7', 0x26: '8', 0x14: '9', 0x34: '0', 
+            0x04: "'", 0x0C: '/', 0x1C: '>', 0x24: '-', 0x2C: '%', 0x3E: '=',
+            0x21: '*', 0x23: '<', 0x29: '[', 0x2B: '$', 0x2F: '+', 0x31: ']',
+            0x33: ':', 0x37: '?', 0x38: '!', 0x39: '(', 0x3B: ')', 0x3F: '|'
+        }
+
+        bse_lines = []
+        for plate in plates_data:
+            for line_cells in plate:
+                line_str = ""
+                for cell in line_cells:
+                    dots = cell['dots']
+                    val = 0
+                    if dots[0]: val += 1
+                    if dots[1]: val += 2
+                    if dots[2]: val += 4
+                    if dots[3]: val += 8
+                    if dots[4]: val += 16
+                    if dots[5]: val += 32
+                    line_str += ascii_map.get(val, '?')
+                bse_lines.append(line_str)
+            bse_lines.append("") 
+        return "\r\n".join(bse_lines)
 
     def _int_to_braille_dots(self, n):
         s = str(n)
@@ -53,25 +90,21 @@ class STLGenerator:
         return dots
 
     def _create_plate_stl(self, body_lines_dots, page_num_dots, base_thickness=1.0):
-        """1枚のプレートのSTLバイナリデータを生成する (角丸・穴あき・補強付き・平坦化ドーム)"""
-        
-        # --- 寸法定義 (mm) ---
-        DOT_BASE_DIA = 1.6   # ドット底面直径
-        DOT_HEIGHT = 0.5     # ドット高さ
+        # 寸法 (平坦化対応)
+        DOT_BASE_DIA = 1.6
+        DOT_HEIGHT = 0.5
         DOT_PITCH_X = 2.2
         DOT_PITCH_Y = 2.4
         CHAR_PITCH = 6.0
         LINE_HEIGHT = 10.0
         LINE_PITCH = 12.0
-        BASE_THICKNESS = base_thickness # 可変の厚みを使用
+        BASE_THICKNESS = base_thickness
         
-        # レイアウト
         MARGIN_TOP = 4.0
         MARGIN_BOTTOM = 4.0
         MARGIN_RIGHT = 4.0
         MARGIN_LEFT = 4.0
         
-        # 左サイドエリア（穴とページ番号用）
         HOLE_DIA = 5.0
         HOLE_RADIUS = HOLE_DIA / 2
         HOLE_RING_WIDTH = 1.5 
@@ -79,14 +112,12 @@ class STLGenerator:
         LEFT_SIDE_WIDTH = max(HOLE_DIA + HOLE_RING_WIDTH*2 + 4.0, len(page_num_dots) * CHAR_PITCH)
         if LEFT_SIDE_WIDTH < 15.0: LEFT_SIDE_WIDTH = 15.0
 
-        # 本文エリア計算
         num_lines = len(body_lines_dots)
         max_line_chars = 0
         for line in body_lines_dots:
             max_line_chars = max(max_line_chars, len(line))
         body_width = max_line_chars * CHAR_PITCH
         
-        # 全体サイズ
         total_width = MARGIN_LEFT + LEFT_SIDE_WIDTH + body_width + MARGIN_RIGHT
         total_height = MARGIN_TOP + LINE_HEIGHT + ((num_lines - 1) * LINE_PITCH) + MARGIN_BOTTOM
         
@@ -96,7 +127,6 @@ class STLGenerator:
 
         triangles = []
 
-        # 1. ベースプレート (穴あき角丸)
         hole_cx = MARGIN_LEFT + (HOLE_RADIUS + HOLE_RING_WIDTH)
         hole_cy = total_height - (MARGIN_TOP + HOLE_RADIUS + HOLE_RING_WIDTH)
         
@@ -107,7 +137,6 @@ class STLGenerator:
             hole_cx=hole_cx, hole_cy=hole_cy, hole_r=HOLE_RADIUS
         )
 
-        # 2. 穴の補強リング
         self._add_tube(
             triangles, 
             cx=hole_cx, cy=hole_cy, z_base=BASE_THICKNESS, 
@@ -115,7 +144,6 @@ class STLGenerator:
             height=DOT_HEIGHT
         )
 
-        # 3. ページ番号 (左下)
         page_num_y = MARGIN_BOTTOM + LINE_HEIGHT/2 
         page_num_x = MARGIN_LEFT
         page_content_width = len(page_num_dots) * CHAR_PITCH
@@ -130,7 +158,6 @@ class STLGenerator:
             self._add_braille_char(triangles, char_dots, current_x, pg_y, BASE_THICKNESS, DOT_BASE_DIA, DOT_HEIGHT, DOT_PITCH_X, DOT_PITCH_Y)
             current_x += CHAR_PITCH
 
-        # 4. 本文配置 (右側エリア)
         body_start_x = MARGIN_LEFT + LEFT_SIDE_WIDTH
         first_line_center_y = total_height - MARGIN_TOP - LINE_HEIGHT/2
         
@@ -143,7 +170,6 @@ class STLGenerator:
                 self._add_braille_char(triangles, char_dots, line_x, line_y, BASE_THICKNESS, DOT_BASE_DIA, DOT_HEIGHT, DOT_PITCH_X, DOT_PITCH_Y)
                 line_x += CHAR_PITCH
 
-        # --- バイナリ生成 ---
         header = b'Tenji P-Fab Generated STL' + b'\0' * (80 - 25)
         num_tris = len(triangles)
         
@@ -161,7 +187,6 @@ class STLGenerator:
         return data
 
     def _add_plate_with_hole(self, triangles, width, height, depth, corner_radius, hole_cx, hole_cy, hole_r):
-        """穴あき角丸プレート"""
         segments = 32
         outer_points = self._generate_rounded_rect_path(width, height, corner_radius, segments)
         hole_points = []
@@ -249,64 +274,37 @@ class STLGenerator:
                 self._add_dot_mesh(triangles, cx, cy, z_base, dia/2, height)
 
     def _add_dot_mesh(self, triangles, cx, cy, cz, r, h):
-        """上部を平坦化したドーム状のドットを追加"""
         segments = 24
         rings = 6
-        
-        # 上部1/4をカットして平坦にする (高さの75%まで形状を作る)
         flat_ratio = 0.75
-        
-        # 実際に生成したい高さ h を実現するために、
-        # 「もし頂点まで作ったらこの高さになるはず」という仮想高さを計算してカーブを描く
-        # z = h_virtual * sin(theta)
-        # h = h_virtual * sin(theta_max)
-        # theta_max = pi/2 * flat_ratio
-        
         theta_limit = (math.pi / 2) * flat_ratio
         sin_limit = math.sin(theta_limit)
-        
-        # 補正係数（指定された高さ h に到達させるための倍率）
-        # これがないと、途中で切った分だけ背が低くなってしまう
         z_scale = 1.0 / sin_limit
         
         prev_ring_points = []
         
-        # 最下層リング
         for i in range(segments):
             angle = 2 * math.pi * i / segments
             bx = cx + r * math.cos(angle)
             by = cy + r * math.sin(angle)
             prev_ring_points.append((bx, by, cz))
             
-        # リングを積み上げる
         for j in range(1, rings + 1):
-            # 現在のステップの角度割合 (0 ～ theta_limit)
             theta = theta_limit * (j / rings)
-            
-            # 高さ: 元の半球の式 * 高さ補正
             z_curr = cz + (h * math.sin(theta)) * z_scale
-            # ただし、最終段は正確に h になるようにクリップ（計算誤差対策）
             if j == rings:
                 z_curr = cz + h
-            
-            # 半径: 元の半球の式
             r_curr = r * math.cos(theta)
-            
             current_ring_points = []
             
             if j == rings: 
-                # 最上部は「円盤（蓋）」を作る
-                # 中心点
                 top_center = (cx, cy, z_curr)
-                
-                # 円周上の点を生成
                 for i in range(segments):
                     angle = 2 * math.pi * i / segments
                     rx = cx + r_curr * math.cos(angle)
                     ry = cy + r_curr * math.sin(angle)
                     current_ring_points.append((rx, ry, z_curr))
                 
-                # 側面（1つ前のリングと繋ぐ）
                 for i in range(segments):
                     next_i = (i + 1) % segments
                     p1_lower = prev_ring_points[i]
@@ -316,28 +314,24 @@ class STLGenerator:
                     triangles.append(((0,0,1), p1_lower, p2_lower, p1_upper))
                     triangles.append(((0,0,1), p1_upper, p2_lower, p2_upper))
                 
-                # 蓋（中心点と現在のリングを繋ぐ）
                 for i in range(segments):
                     p1 = current_ring_points[i]
                     p2 = current_ring_points[(i + 1) % segments]
                     triangles.append(((0,0,1), p1, p2, top_center))
                     
             else:
-                # 中間のリング
                 for i in range(segments):
                     angle = 2 * math.pi * i / segments
                     rx = cx + r_curr * math.cos(angle)
                     ry = cy + r_curr * math.sin(angle)
                     current_ring_points.append((rx, ry, z_curr))
                 
-                # 側面を埋める
                 for i in range(segments):
                     next_i = (i + 1) % segments
                     p1_lower = prev_ring_points[i]
                     p2_lower = prev_ring_points[next_i]
                     p1_upper = current_ring_points[i]
                     p2_upper = current_ring_points[next_i]
-                    
                     triangles.append(((0,0,1), p1_lower, p2_lower, p1_upper))
                     triangles.append(((0,0,1), p1_upper, p2_lower, p2_upper))
                 
