@@ -1,20 +1,39 @@
-import flet as ft
-import asyncio
+import logging
+import sys
 import os
+import time
 from datetime import datetime
 
-# モジュールインポート
-from styles import AppColors, TextStyles, ComponentStyles
-# 特殊符を確実にインポート
-from braille_logic import (
-    BrailleConverter, SPACE_MARK,
-    DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
-    YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
-)
-from stl_generator import STLGenerator
-from history_manager import HistoryManager
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+print("--- App Starting (Flet 0.80.0+ API Compatible) ---")
 
-async def main(page: ft.Page):
+import flet as ft
+
+# Fletバージョンの確認用ログ
+try:
+    print(f"Flet version: {ft.version}")
+except:
+    print("Flet version: unknown")
+
+# モジュールインポート
+try:
+    from styles import AppColors, TextStyles, ComponentStyles
+    from braille_logic import (
+        BrailleConverter, SPACE_MARK,
+        DAKUTEN_MARK, HANDAKUTEN_MARK, YOON_MARK, 
+        YOON_DAKU_MARK, YOON_HANDAKU_MARK, NUM_INDICATOR, FOREIGN_INDICATOR
+    )
+    from stl_generator import STLGenerator
+    from history_manager import HistoryManager
+    print("Modules loaded successfully.")
+except ImportError as e:
+    logging.error(f"Module import error: {e}", exc_info=True)
+    sys.exit(1)
+
+def main(page: ft.Page):
+    print("--- Main Function Called ---")
+    
     # --- 1. アプリ全体の初期設定 ---
     page.title = "Tenji P-Fab"
     page.bgcolor = AppColors.BACKGROUND
@@ -25,21 +44,73 @@ async def main(page: ft.Page):
     
     try:
         page.window_to_front()
-    except:
+    except Exception:
         pass
 
-    file_picker = ft.FilePicker()
-    page.overlay.append(file_picker)
-    page.update()
+    # --- ヘルパー関数 (最新API対応) ---
+    def show_snackbar(message, is_error=False, duration=3000):
+        """SnackBarを表示する (page.open使用)"""
+        try:
+            snack = ft.SnackBar(
+                content=ft.Text(message),
+                bgcolor=AppColors.ERROR if is_error else None,
+                duration=duration,
+                action="OK"
+            )
+            page.open(snack)
+        except Exception as e:
+            logging.error(f"Failed to show snackbar: {e}", exc_info=True)
 
+    def open_dialog(dlg):
+        """ダイアログを開く (page.open使用)"""
+        print(f"DEBUG: open_dialog called for {dlg}")
+        try:
+            page.open(dlg)
+            print("DEBUG: Dialog opened via page.open().")
+        except Exception as e:
+            logging.error(f"Dialog open failed: {e}", exc_info=True)
+
+    def close_dialog(dlg):
+        """ダイアログを閉じる (page.close使用)"""
+        print("DEBUG: close_dialog called")
+        try:
+            page.close(dlg)
+        except Exception as e:
+            logging.error(f"Dialog close failed: {e}", exc_info=True)
+
+    def show_drawer(drawer_control):
+        """ドロワーを開く (page.open使用)"""
+        print("DEBUG: show_drawer called")
+        try:
+            page.open(drawer_control)
+            print("DEBUG: Drawer opened via page.open().")
+        except Exception as e:
+            logging.error(f"Failed to open drawer: {e}", exc_info=True)
+
+    # --- FilePickerの設定 ---
+    is_macos = sys.platform == "darwin"
+    
+    file_picker = None
+    if not is_macos:
+        # macOS以外ではFilePickerを使用
+        try:
+            file_picker = ft.FilePicker()
+            page.overlay.append(file_picker)
+        except Exception as e:
+            logging.error(f"Failed to setup FilePicker: {e}", exc_info=True)
+    
+    # ロジック初期化
     converter = BrailleConverter()
     stl_generator = STLGenerator()
     history_manager = HistoryManager(page)
     
-    current_mapped_data = [] 
-    editing_index = -1       
+    # 状態管理
+    state = {
+        "current_mapped_data": [],
+        "editing_index": -1
+    }
     
-    # 設定の初期化 (デフォルト値)
+    # 設定の初期化
     settings = {
         "max_chars_per_line": 10,
         "max_lines_per_plate": 3,
@@ -49,48 +120,40 @@ async def main(page: ft.Page):
         "use_quick_save": False
     }
 
-    # --- プラットフォーム判定による保存方法のデフォルト設定 ---
-    if page.platform == ft.PagePlatform.MACOS:
-        # macOS: ダイアログが開かない問題があるため、Quick Save(直接保存)をデフォルトにする
+    # macOSはデフォルトでQuick Save有効
+    if is_macos:
         settings["use_quick_save"] = True
-    else:
-        # その他(モバイル、Windows等): ユーザー要望によりダイアログ保存を優先(デフォルトFalse)
-        # ※ただしモバイルでFilePickerがサポートされていない場合は動作しない可能性があるため、
-        # 必要に応じて設定からQuick Saveに切り替えてもらう運用とする
-        settings["use_quick_save"] = False
 
-    # --- 設定の読み込みと復元 ---
-    saved_config = history_manager.load_settings()
-    if saved_config:
-        # 保存された設定があれば上書き
-        for key in settings.keys():
-            if key in saved_config:
-                settings[key] = saved_config[key]
+    # 設定復元
+    try:
+        saved_config = history_manager.load_settings()
+        if saved_config:
+            for key in settings.keys():
+                if key in saved_config:
+                    settings[key] = saved_config[key]
+            # Macは強制的にTrue
+            if is_macos:
+                settings["use_quick_save"] = True
+    except Exception as e:
+        print(f"Config Load Error: {e}")
     
+    # UI Refs
     txt_input_ref = ft.Ref[ft.TextField]()
     edit_field_ref = ft.Ref[ft.TextField]()
     chars_slider_ref = ft.Ref[ft.Slider]()
     lines_slider_ref = ft.Ref[ft.Slider]()
     thickness_slider_ref = ft.Ref[ft.Slider]() 
-    
-    # 履歴設定用
     history_limit_slider_ref = ft.Ref[ft.Slider]()
-
-    if not converter.use_kakasi:
-        page.snack_bar = ft.SnackBar(
-            content=ft.Text(f"⚠️ かな変換機能が無効です (Pykakasi未検出)\nひらがなで入力してください"),
-            bgcolor=AppColors.ERROR,
-            duration=5000,
-            action="OK"
-        )
-        page.snack_bar.open = True
-        page.update()
+    
+    # かな変換チェック
+    if hasattr(converter, 'use_kakasi') and not converter.use_kakasi:
+        print("Warning: Kana converter (Janome) unavailable.")
 
     def _make_dot(is_active):
         return ft.Container(
             width=8, height=8,
             bgcolor=AppColors.DOT_ACTIVE if is_active else AppColors.DOT_INACTIVE,
-            border_radius=4,
+            border_radius=ft.BorderRadius(4, 4, 4, 4),
         )
 
     braille_display_area = ft.Column(
@@ -98,7 +161,7 @@ async def main(page: ft.Page):
         spacing=10, 
     )
 
-    # --- 禁則処理付き行分割ロジック ---
+    # --- ロジック群 ---
     def split_cells_with_rules(all_cells, max_chars):
         lines = []
         current_line = []
@@ -123,6 +186,7 @@ async def main(page: ft.Page):
                 
         for unit in units:
             unit_len = len(unit)
+            # 行あふれ判定
             if len(current_line) + unit_len > max_chars:
                 if len(current_line) > 0:
                     lines.append(current_line)
@@ -131,23 +195,22 @@ async def main(page: ft.Page):
             
         if current_line:
             lines.append(current_line)
-            
         return lines
 
     def open_edit_dialog(index):
-        nonlocal editing_index
-        editing_index = index
-        item = current_mapped_data[index]
+        print(f"DEBUG: open_edit_dialog called for index {index}")
+        state["editing_index"] = index
+        item = state["current_mapped_data"][index]
         edit_dialog.title = ft.Text(f"「{item['orig']}」の読みを修正")
         if edit_field_ref.current:
             edit_field_ref.current.value = item['reading']
-        page.open(edit_dialog)
+        open_dialog(edit_dialog)
 
     def render_braille_preview():
         braille_display_area.controls.clear()
         
         flat_cells_all = []
-        for word_idx, item in enumerate(current_mapped_data):
+        for word_idx, item in enumerate(state["current_mapped_data"]):
             for cell in item['cells']:
                 flat_cells_all.append({
                     'dots': cell['dots'],
@@ -155,7 +218,7 @@ async def main(page: ft.Page):
                     'word_idx': word_idx, 
                     'orig': item['orig']
                 })
-            if word_idx < len(current_mapped_data) - 1:
+            if word_idx < len(state["current_mapped_data"]) - 1:
                 flat_cells_all.append({
                     'dots': SPACE_MARK,
                     'char': ' ',
@@ -163,8 +226,8 @@ async def main(page: ft.Page):
                     'orig': '(Space)'
                 })
         
-        chars_per_line = settings["max_chars_per_line"]
-        lines_per_plate = settings["max_lines_per_plate"]
+        chars_per_line = int(settings["max_chars_per_line"])
+        lines_per_plate = int(settings["max_lines_per_plate"])
         
         if chars_per_line <= 0: chars_per_line = 10
         if lines_per_plate <= 0: lines_per_plate = 1
@@ -198,8 +261,8 @@ async def main(page: ft.Page):
                                 content=ft.Row([col1, col2], spacing=2),
                                 padding=4,
                                 bgcolor=AppColors.SURFACE,
-                                border_radius=4,
-                                shadow=ft.BoxShadow(blur_radius=1, color=ft.Colors.with_opacity(0.1, "#000000")),
+                                border_radius=ft.BorderRadius(4, 4, 4, 4),
+                                shadow=ft.BoxShadow(blur_radius=1, color=ft.Colors.with_opacity(0.1, "#000000")), # 修正: ft.Colors
                             ),
                             ft.Text(char_str, style=TextStyles.READING, text_align=ft.TextAlign.CENTER, width=20)
                         ], spacing=2, alignment=ft.MainAxisAlignment.CENTER),
@@ -218,11 +281,11 @@ async def main(page: ft.Page):
                 ft.Container(
                     content=ft.Column(plate_content_controls, spacing=10),
                     padding=10, 
-                    bgcolor=ft.Colors.WHITE54, 
-                    border_radius=8,
-                    border=ft.border.all(1, ft.Colors.BLACK12)
+                    bgcolor=ft.Colors.WHITE54, # 修正: ft.Colors
+                    border_radius=ft.BorderRadius(8, 8, 8, 8),
+                    border=ft.border.all(1, ft.Colors.BLACK12) # 修正: ft.Colors
                 ),
-                ft.Divider(height=10, color=ft.Colors.TRANSPARENT)
+                ft.Divider(height=10, color=ft.Colors.TRANSPARENT) # 修正: ft.Colors
             ], spacing=2)
             
             braille_display_area.controls.append(plate_ui)
@@ -230,28 +293,27 @@ async def main(page: ft.Page):
         page.update()
 
     def update_braille_from_input(text):
-        nonlocal current_mapped_data
-        current_mapped_data = converter.convert_with_mapping(text)
+        state["current_mapped_data"] = converter.convert_with_mapping(text)
         render_braille_preview()
 
     def save_reading_edit(e):
-        nonlocal current_mapped_data
-        if editing_index < 0: return
+        if state["editing_index"] < 0: return
         new_reading = edit_field_ref.current.value
         if new_reading:
-            current_mapped_data[editing_index]['reading'] = new_reading
+            state["current_mapped_data"][state["editing_index"]]['reading'] = new_reading
             new_cells = converter.kana_to_cells(new_reading)
-            current_mapped_data[editing_index]['cells'] = new_cells
-            current_mapped_data[editing_index]['braille'] = [c['dots'] for c in new_cells]
+            state["current_mapped_data"][state["editing_index"]]['cells'] = new_cells
+            state["current_mapped_data"][state["editing_index"]]['braille'] = [c['dots'] for c in new_cells]
             render_braille_preview()
-            page.open(ft.SnackBar(content=ft.Text(f"読みを修正しました")))
-        page.close(edit_dialog)
+            show_snackbar(f"読みを修正しました")
+        close_dialog(edit_dialog)
 
+    # 編集ダイアログ
     edit_dialog = ft.AlertDialog(
         title=ft.Text("読みの修正"),
         content=ft.TextField(ref=edit_field_ref, autofocus=True, label="読み（ひらがな）"),
         actions=[
-            ft.TextButton("キャンセル", on_click=lambda e: page.close(edit_dialog)),
+            ft.TextButton("キャンセル", on_click=lambda e: close_dialog(edit_dialog)),
             ft.TextButton("保存", on_click=save_reading_edit),
         ],
     )
@@ -261,7 +323,7 @@ async def main(page: ft.Page):
         e.control.label = f"{int(e.control.value)}文字"
         e.control.update()
         history_manager.save_settings(settings)
-        if current_mapped_data:
+        if state["current_mapped_data"]:
             render_braille_preview()
 
     def on_lines_slider_change(e):
@@ -269,7 +331,7 @@ async def main(page: ft.Page):
         e.control.label = f"{int(e.control.value)}行"
         e.control.update()
         history_manager.save_settings(settings)
-        if current_mapped_data:
+        if state["current_mapped_data"]:
             render_braille_preview()
 
     def on_thickness_slider_change(e):
@@ -279,6 +341,11 @@ async def main(page: ft.Page):
         history_manager.save_settings(settings)
 
     def on_save_mode_change(e):
+        if is_macos:
+            show_snackbar("macOSでは直接保存のみサポートされています")
+            e.control.value = True
+            e.control.update()
+            return
         settings["use_quick_save"] = e.control.value
         e.control.update()
         history_manager.save_settings(settings)
@@ -333,22 +400,19 @@ async def main(page: ft.Page):
                     label="Quick Save (直接保存)",
                     value=settings["use_quick_save"],
                     on_change=on_save_mode_change,
-                    tooltip="ダイアログを開かずに保存します（macOS等推奨）"
+                    tooltip="ダイアログを開かずに保存します（macOS等推奨）",
+                    disabled=is_macos
                 ),
             ], height=450, tight=True, scroll=ft.ScrollMode.AUTO),
-            actions=[ft.TextButton("閉じる", on_click=lambda e: page.close(dlg))],
+            actions=[ft.TextButton("閉じる", on_click=lambda e: close_dialog(dlg))],
         )
-        page.open(dlg)
+        open_dialog(dlg)
 
-    # --- 履歴機能 ---
     def restore_history_entry(e):
-        """履歴アイテムがタップされたときの復元処理"""
         entry = e.control.data
-        
         settings["max_chars_per_line"] = entry.get("max_chars_per_line", 10)
         settings["max_lines_per_plate"] = entry.get("max_lines_per_plate", 3)
         settings["plate_thickness"] = entry.get("plate_thickness", 1.0)
-        
         history_manager.save_settings(settings)
         
         if txt_input_ref.current:
@@ -356,11 +420,13 @@ async def main(page: ft.Page):
             txt_input_ref.current.update()
             update_braille_from_input(txt_input_ref.current.value)
             
-        page.close(history_dialog)
-        page.open(ft.SnackBar(content=ft.Text("履歴から復元しました")))
+        close_dialog(history_dialog)
+        show_snackbar("履歴から復元しました")
+
+    history_dialog = None
 
     def show_history_dialog(e):
-        """履歴一覧ダイアログを表示"""
+        nonlocal history_dialog
         history_list = history_manager.get_history()
         
         if not history_list:
@@ -369,16 +435,11 @@ async def main(page: ft.Page):
             list_items = []
             for entry in history_list:
                 raw_text = entry.get("text", "")
-                if len(raw_text) > 20:
-                    display_text = raw_text[:20] + "..."
-                else:
-                    display_text = raw_text
-                
+                display_text = raw_text[:20] + "..." if len(raw_text) > 20 else raw_text
                 timestamp = entry.get('timestamp', '')
-                
                 list_items.append(
                     ft.ListTile(
-                        leading=ft.Icon(ft.Icons.HISTORY, color=AppColors.PRIMARY),
+                        leading=ft.Icon(ft.Icons.HISTORY, color=AppColors.PRIMARY), # 修正: ft.Icons
                         title=ft.Text(display_text, weight=ft.FontWeight.BOLD),
                         subtitle=ft.Text(timestamp, size=12, color=AppColors.TEXT_SUB),
                         data=entry,
@@ -387,46 +448,42 @@ async def main(page: ft.Page):
                 )
             content = ft.ListView(controls=list_items, height=300)
 
-        global history_dialog
         history_dialog = ft.AlertDialog(
-            title=ft.Text("履歴 (タップして復元)"),
+            title=ft.Text("履歴"),
             content=content,
             actions=[
                 ft.TextButton("全削除", on_click=lambda e: _clear_history_handler(e), style=ft.ButtonStyle(color=AppColors.ERROR)),
-                ft.TextButton("閉じる", on_click=lambda e: page.close(history_dialog))
+                ft.TextButton("閉じる", on_click=lambda e: close_dialog(history_dialog))
             ],
         )
-        page.open(history_dialog)
+        open_dialog(history_dialog)
 
     def _clear_history_handler(e):
         history_manager.clear_history()
-        page.close(history_dialog)
-        page.open(ft.SnackBar(content=ft.Text("履歴を削除しました")))
+        close_dialog(history_dialog)
+        show_snackbar("履歴を削除しました")
 
-    # --- 保存処理 ---
     def get_structured_data_for_export():
         flat_cells_all = []
-        for word_idx, item in enumerate(current_mapped_data):
+        for word_idx, item in enumerate(state["current_mapped_data"]):
             for cell in item['cells']:
                 flat_cells_all.append(cell) 
-            if word_idx < len(current_mapped_data) - 1:
+            if word_idx < len(state["current_mapped_data"]) - 1:
                 flat_cells_all.append({'dots': SPACE_MARK, 'char': ' '})
-        
         lines = split_cells_with_rules(flat_cells_all, settings["max_chars_per_line"])
         lines_per_plate = settings["max_lines_per_plate"]
         plates = [lines[i:i + lines_per_plate] for i in range(0, len(lines), lines_per_plate)]
         return plates
 
     def _on_save_success(path):
-        """保存成功時の共通処理"""
         text = txt_input_ref.current.value if txt_input_ref.current else ""
         if text:
             history_manager.add_entry(text, settings)
-        page.open(ft.SnackBar(content=ft.Text(f"保存しました: {os.path.basename(path)}")))
+        show_snackbar(f"保存しました: {os.path.basename(path)}")
 
     def handle_save_button_click(e):
-        if not current_mapped_data:
-            page.open(ft.SnackBar(content=ft.Text("データがありません。")))
+        if not state["current_mapped_data"]:
+            show_snackbar("データがありません。")
             return
         
         if settings["use_quick_save"]:
@@ -435,8 +492,11 @@ async def main(page: ft.Page):
             handle_dialog_save()
 
     def handle_dialog_save():
-        page.update()
-        file_picker.save_file(dialog_title="パッケージを保存")
+        if file_picker:
+            page.update()
+            file_picker.save_file(dialog_title="パッケージを保存")
+        else:
+            handle_quick_save()
 
     def handle_quick_save():
         try:
@@ -445,31 +505,30 @@ async def main(page: ft.Page):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"tenji_export_{timestamp}.zip"
             save_path = os.path.join(download_dir, filename)
-            
             _perform_export(save_path)
             _on_save_success(save_path)
         except Exception as ex:
-            page.open(ft.SnackBar(content=ft.Text(f"保存失敗: {str(ex)}"), bgcolor=AppColors.ERROR))
+            show_snackbar(f"保存失敗: {str(ex)}", is_error=True)
 
-    def on_file_picked(e: ft.FilePickerResultEvent):
+    def on_file_picked(e):
         if e.path:
             try:
                 _perform_export(e.path)
                 _on_save_success(e.path)
             except Exception as ex:
-                page.open(ft.SnackBar(content=ft.Text(f"エラー: {str(ex)}"), bgcolor=AppColors.ERROR))
+                show_snackbar(f"エラー: {str(ex)}", is_error=True)
 
     def _perform_export(path):
         plates_data = get_structured_data_for_export()
         original_txt = txt_input_ref.current.value if txt_input_ref.current else ""
-        
         stl_generator.generate_package_from_plates(
             plates_data, path, 
             original_text_str=original_txt,
             base_thickness=settings["plate_thickness"]
         )
 
-    file_picker.on_result = on_file_picked
+    if file_picker:
+        file_picker.on_result = on_file_picked
 
     # --- UI構築 ---
     txt_input = ft.TextField(
@@ -483,14 +542,15 @@ async def main(page: ft.Page):
 
     header = ft.Container(
         content=ft.Row([
-            ft.IconButton(icon="menu", icon_color=AppColors.PRIMARY, on_click=lambda e: page.open(drawer)),
+            # 修正: ft.Icons
+            ft.IconButton(icon=ft.Icons.MENU, icon_color=AppColors.PRIMARY, on_click=lambda e: show_drawer(drawer)),
             ft.Text("Tenji P-Fab", style=TextStyles.HEADER),
             ft.Row([
-                ft.IconButton(icon="save_alt", icon_color=AppColors.PRIMARY, tooltip="保存", on_click=handle_save_button_click),
-                ft.IconButton(icon="settings", icon_color=AppColors.PRIMARY, on_click=show_settings)
+                ft.IconButton(icon=ft.Icons.SAVE_ALT, icon_color=AppColors.PRIMARY, tooltip="保存", on_click=handle_save_button_click),
+                ft.IconButton(icon=ft.Icons.SETTINGS, icon_color=AppColors.PRIMARY, on_click=show_settings)
             ])
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(top=50, left=10, right=10, bottom=10),
+        padding=ft.Padding(left=10, top=50, right=10, bottom=10),
         bgcolor=AppColors.BACKGROUND
     )
 
@@ -510,7 +570,6 @@ async def main(page: ft.Page):
     )
 
     body_content = ft.Column([
-        # 上部: プレビューエリア
         ft.Container(
             content=ft.Column([
                 ft.Text("Braille Preview (Tap to edit)", style=TextStyles.CAPTION),
@@ -518,13 +577,12 @@ async def main(page: ft.Page):
                     content=braille_display_area,
                     expand=True,
                     padding=10, 
-                    alignment=ft.alignment.top_left,
+                    alignment=ft.Alignment(-1, -1),
                 )
             ]),
             expand=True, 
             bgcolor=AppColors.BACKGROUND,
         ),
-        # 下部: 入力エリア & ボタン
         ft.Container(
             content=ft.Column([
                 ft.Text("Input Text", style=TextStyles.CAPTION),
@@ -533,12 +591,11 @@ async def main(page: ft.Page):
                         txt_input,
                         ft.Divider(color=AppColors.BACKGROUND),
                         ft.Row([
-                            ft.IconButton(icon="mic", icon_color=AppColors.PRIMARY),
+                            ft.IconButton(icon=ft.Icons.MIC, icon_color=AppColors.PRIMARY),
                             ft.Container(width=10),
-                            # 統合された保存ボタン
                             ft.ElevatedButton(
                                 "保存", 
-                                icon="save",
+                                icon=ft.Icons.SAVE,
                                 style=ComponentStyles.MAIN_BUTTON_STYLE,
                                 on_click=handle_save_button_click,
                                 expand=True
@@ -546,33 +603,44 @@ async def main(page: ft.Page):
                         ])
                     ]),
                     bgcolor=AppColors.SURFACE,
-                    border_radius=12,
+                    border_radius=ft.BorderRadius(12, 12, 12, 12),
                     shadow=ComponentStyles.CARD_SHADOW,
                     padding=20,
                 )
             ]),
             expand=True, padding=20,
-            border_radius=ft.border_radius.only(top_left=30, top_right=30),
+            border_radius=ft.BorderRadius(30, 30, 0, 0),
             bgcolor=AppColors.SURFACE,
         )
     ], spacing=0, expand=True)
 
-    main_view = ft.View("/", controls=[header, body_content], bgcolor=AppColors.BACKGROUND, padding=0, drawer=drawer)
+    main_view = ft.View(
+        route="/", 
+        controls=[header, body_content], 
+        bgcolor=AppColors.BACKGROUND, 
+        padding=0, 
+        drawer=drawer
+    )
     
     splash_content = ft.Container(
         content=ft.Column(
-            [ft.Icon(name="grid_on_rounded", size=80, color=AppColors.SURFACE),
+            [ft.Icon(ft.Icons.GRID_ON_ROUNDED, size=80, color=AppColors.SURFACE),
              ft.Text("Tenji P-Fab", style=ft.TextStyle(size=30, weight=ft.FontWeight.BOLD, color=AppColors.SURFACE))],
             alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER
         ),
-        bgcolor=AppColors.PRIMARY, alignment=ft.alignment.center, expand=True
+        bgcolor=AppColors.PRIMARY, alignment=ft.Alignment(0, 0), expand=True
     )
 
     page.add(splash_content)
-    await asyncio.sleep(2)
+    page.update()
+    time.sleep(1) 
     page.views.clear()
     page.views.append(main_view)
     page.update()
 
 if __name__ == "__main__":
-    ft.app(target=main, assets_dir="assets")
+    assets_path = os.path.join(os.getcwd(), "assets")
+    if not os.path.exists(assets_path):
+        os.makedirs(assets_path)
+    
+    ft.app(target=main, assets_dir="assets", port=0)
