@@ -98,6 +98,7 @@ class BrailleConverter:
                     current_index += word_len
 
                     cells = self.kana_to_cells(reading)
+                    
                     dots_only = [c['dots'] for c in cells]
 
                     result_data.append({
@@ -145,7 +146,19 @@ class BrailleConverter:
         return result
 
     def kana_to_cells(self, text):
-        cells = [] 
+        cells = []
+        
+        # 修正: 空文字またはスペースのみの場合は空のセルリストを返す
+        if text is None or text == "":
+            return cells
+            
+        # スペースのみの場合はスペースのセルを返す
+        if text.strip() == "":
+             # スペースの数だけ空白セルを追加
+            for _ in text:
+                cells.append({'dots': SPACE_MARK, 'char': ' '})
+            return cells
+
         mode = "kana"
         i = 0
         while i < len(text):
@@ -176,9 +189,11 @@ class BrailleConverter:
                 cells.append({'dots': BRAILLE_MAP.get(char.lower(), SPACE_MARK), 'char': char})
             elif char in BRAILLE_MAP:
                 if mode != "kana": mode = "kana"
+                # text.strip() == "" チェックで全体の空白は弾かれているが、
+                # ここでは辞書にあるなら追加する方針。
                 cells.append({'dots': BRAILLE_MAP[char], 'char': char})
             else:
-                cells.append({'dots': SPACE_MARK, 'char': '?'})
+                pass 
             i += 1
         return cells
 

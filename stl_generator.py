@@ -92,7 +92,11 @@ class STLGenerator:
     def _create_plate_stl(self, body_lines_dots, page_num_dots, base_thickness=1.0):
         # 寸法 (平坦化対応)
         DOT_BASE_DIA = 1.6
+<<<<<<< HEAD
         DOT_HEIGHT = 0.5
+=======
+        DOT_HEIGHT = 0.75
+>>>>>>> 1be98c0 (rollback)
         DOT_PITCH_X = 2.2
         DOT_PITCH_Y = 2.4
         CHAR_PITCH = 6.0
