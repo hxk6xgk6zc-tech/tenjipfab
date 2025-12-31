@@ -136,8 +136,8 @@ def main(page: ft.Page):
     
     settings = {
         "max_chars_per_line": 10,
-        "max_lines_per_plate": 3,
-        "plate_thickness": 1.0, 
+        "max_lines_per_plate": 4,
+        "plate_thickness": 0.6, 
         "use_quick_save": False
     }
 
@@ -492,23 +492,6 @@ def main(page: ft.Page):
         except Exception as e:
             logging.error(f"Conversion Error: {e}")
 
-    # --- Event Handlers ---
-    def on_chars_slider_change(e):
-        settings["max_chars_per_line"] = int(e.control.value)
-        e.control.label = f"{int(e.control.value)}文字"
-        e.control.update()
-        history_manager.save_settings(settings)
-        if state["current_mapped_data"]:
-            render_braille_preview()
-
-    def on_lines_slider_change(e):
-        settings["max_lines_per_plate"] = int(e.control.value)
-        e.control.label = f"{int(e.control.value)}行"
-        e.control.update()
-        history_manager.save_settings(settings)
-        if state["current_mapped_data"]:
-            render_braille_preview()
-
     def get_structured_data_for_export():
         flat_cells_all = []
         for word_idx, item in enumerate(state["current_mapped_data"]):
@@ -653,6 +636,7 @@ def main(page: ft.Page):
         sync_settings_ui()
         
         def on_chars_change(e):
+            print(658, e)
             val = int(e.control.value)
             if chars_label_ref.current: chars_label_ref.current.value = f"{val}文字"
             if chars_slider_ref.current: chars_slider_ref.current.label = f"{val}"
@@ -686,7 +670,7 @@ def main(page: ft.Page):
                 ]),
                 ft.Text("1プレートあたりの行数"),
                 ft.Row([
-                    ft.Slider(ref=lines_slider_ref, min=1, max=10, divisions=9, on_change=on_lines_change, expand=True),
+                    ft.Slider(ref=lines_slider_ref, min=1, max=20, divisions=19, on_change=on_lines_change, expand=True),
                     ft.Text(ref=lines_label_ref, width=60, text_align=ft.TextAlign.RIGHT)
                 ]),
                 ft.Text("プレートの厚さ (mm)"),
