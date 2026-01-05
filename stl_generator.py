@@ -154,9 +154,10 @@ class STLGenerator:
         current_x = page_num_x
         pg_y = page_num_y - dots_center_y_offset 
 
-        for char_dots in page_num_dots:
-            self._add_braille_char(triangles, char_dots, current_x, pg_y, BASE_THICKNESS, DOT_BASE_DIA, DOT_HEIGHT, DOT_PITCH_X, DOT_PITCH_Y)
-            current_x += CHAR_PITCH
+        if len(body_lines_dots) > 1:
+            for char_dots in page_num_dots:
+                self._add_braille_char(triangles, char_dots, current_x, pg_y, BASE_THICKNESS, DOT_BASE_DIA, DOT_HEIGHT, DOT_PITCH_X, DOT_PITCH_Y)
+                current_x += CHAR_PITCH
 
         body_start_x = MARGIN_LEFT + LEFT_SIDE_WIDTH
         first_line_center_y = total_height - MARGIN_TOP - LINE_HEIGHT/2
@@ -276,7 +277,7 @@ class STLGenerator:
     def _add_dot_mesh(self, triangles, cx, cy, cz, r, h):
         segments = 24
         rings = 6
-        flat_ratio = 0.75
+        flat_ratio = 0.5
         theta_limit = (math.pi / 2) * flat_ratio
         sin_limit = math.sin(theta_limit)
         z_scale = 1.0 / sin_limit

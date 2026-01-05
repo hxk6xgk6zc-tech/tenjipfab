@@ -424,7 +424,7 @@ def main(page: ft.Page):
             # 1. 設定の復元
             settings["max_chars_per_line"] = int(item.get("max_chars_per_line", 10))
             settings["max_lines_per_plate"] = int(item.get("max_lines_per_plate", 3))
-            settings["plate_thickness"] = float(item.get("plate_thickness", 1.0))
+            settings["plate_thickness"] = float(item.get("plate_thickness", 0.6))
             
             # 2. UIへの反映 (スライダー位置などを同期)
             sync_settings_ui()
@@ -636,7 +636,6 @@ def main(page: ft.Page):
         sync_settings_ui()
         
         def on_chars_change(e):
-            print(658, e)
             val = int(e.control.value)
             if chars_label_ref.current: chars_label_ref.current.value = f"{val}文字"
             if chars_slider_ref.current: chars_slider_ref.current.label = f"{val}"
@@ -675,7 +674,7 @@ def main(page: ft.Page):
                 ]),
                 ft.Text("プレートの厚さ (mm)"),
                 ft.Row([
-                    ft.Slider(ref=thickness_slider_ref, min=0.5, max=2.0, divisions=15, on_change=on_thick_change, expand=True),
+                    ft.Slider(ref=thickness_slider_ref, min=0.4, max=2.0, divisions=16, on_change=on_thick_change, expand=True),
                     ft.Text(ref=thickness_label_ref, width=60, text_align=ft.TextAlign.RIGHT)
                 ]),
             ], height=300, tight=True),

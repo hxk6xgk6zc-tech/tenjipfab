@@ -94,7 +94,7 @@ def process_build(target, version, build_number):
     flet_cmd_base = "flet build apk" if target == "android" else "flet build ipa"
     
     # バージョンオプションを指定してプロジェクト生成
-    flet_cmd = f"{flet_cmd_base} --module-name main --no-web --build-name {version} --build-number {build_number}"
+    flet_cmd = f"{flet_cmd_base} --module-name main --no-web"# --build-name {version} --build-number {build_number}"
     run_command(flet_cmd, ignore_error=True)
 
     # Flutterプロジェクトルートを特定
